@@ -203,6 +203,7 @@ def delete(db: sqlite3.Connection, user_id: int) -> None:
     db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
     db.execute("UPDATE pair_codes SET used_by = NULL WHERE used_by = ?", (user_id,))
     db.execute("DELETE FROM pair_codes WHERE parent_id = ?", (user_id,))
+    db.execute("UPDATE users SET parent_id = NULL WHERE parent_id = ?", (user_id,))
     db.execute("DELETE FROM users WHERE id = ?", (user_id,))
 
 
