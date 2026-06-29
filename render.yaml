@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: guardian-ledger-backend-demo
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn wsgi:app
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: FLASK_ENV
+        value: production
+      - key: DATABASE_PATH
+        value: /var/data/guardian_ledger.db
+      - key: CORS_ORIGINS
+        value: https://your-frontend-domain
+      - key: VULNERABLE_MODE
+        value: "true"
+      - key: LOG_LEVEL
+        value: INFO
+    disk:
+      name: guardian-ledger-data
+      mountPath: /var/data
+      sizeGB: 1

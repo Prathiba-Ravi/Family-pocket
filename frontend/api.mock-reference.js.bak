@@ -1,0 +1,217 @@
+// src/lib/api.js
+//
+// MOCK BACKEND -------------------------------------------------------------
+// This file simulates the Python backend using localStorage so the frontend
+// is fully demoable on its own. Every function returns a Promise and has a
+// shape that mirrors what a real REST call would look like, so swapping in
+// real `fetch("/api/...")` calls later is a drop-in replacement.
+//
+// Suggested real endpoints when you build the Flask/FastAPI backend:
+//   POST /api/auth/register-parent      -> { name, username, password }
+//   POST /api/auth/login                -> { username, password }
+//   POST /api/pairing/generate           (parent, auth required)
+//   POST /api/auth/register-child       -> { name, username, password, pairCode }
+//   GET  /api/transactions                (auth required)
+//   POST /api/transactions               -> { amount, merchant, note }   (child)
+//   POST /api/transactions/:id/approve    (parent)
+//   POST /api/transactions/:id/deny       (parent)
+// ---------------------------------------------------------------------------
+
+const DB_KEY = "gl_db_v1";
+const SESSION_KEY = "gl_session_v1";
+const LATENCY = 450;
+
+function delay(ms = LATENCY) {
+  return new Promise((res) => setTimeout(res, ms));
+}
+
+function readDB() {
+  const raw = localStorage.getItem(DB_KEY);
+  if (raw) return JSON.parse(raw);
+  const fresh = { users: [], transactions: [], pairCodes: [] };
+  localStorage.setItem(DB_KEY, JSON.stringify(fresh));
+  return fresh;
+}
+
+function writeDB(db) {
+  localStorage.setItem(DB_KEY, JSON.stringify(db));
+}
+
+function uid(prefix = "id") {
+  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function genPairCode() {
+  // human-friendly: 3 letters + 3 digits, easy to read aloud / write on paper
+  const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const digits = "0123456789";
+  let code = "";
+  for (let i = 0; i < 3; i++) code += letters[Math.floor(Math.random() * letters.length)];
+  code += "-";
+  for (let i = 0; i < 3; i++) code += digits[Math.floor(Math.random() * digits.length)];
+  return code;
+}
+
+function sanitizeUser(u) {
+  if (!u) return null;
+  const { password, ...rest } = u;
+  return rest;
+}
+
+function getSession() {
+  const raw = localStorage.getItem(SESSION_KEY);
+  return raw ? JSON.parse(raw) : null;
+}
+
+function setSession(userId) {
+  localStorage.setItem(SESSION_KEY, JSON.stringify({ userId }));
+}
+
+function clearSession() {
+  localStorage.removeItem(SESSION_KEY);
+}
+
+export const api = {
+  async registerParent({ name, username, password }) {
+    await delay();
+    const db = readDB();
+    if (db.users.some((u) => u.username === username)) {
+      throw new Error("That username is already taken.");
+    }
+    const user = {
+      id: uid("parent"),
+      role: "parent",
+      name,
+      username,
+      password, // demo only — never store plaintext passwords in a real backend
+      childIds: [],
+      createdAt: Date.now(),
+    };
+    db.users.push(user);
+    writeDB(db);
+    setSession(user.id);
+    return sanitizeUser(user);
+  },
+
+  async login({ username, password }) {
+    await delay();
+    const db = readDB();
+    const user = db.users.find((u) => u.username === username && u.password === password);
+    if (!user) throw new Error("Username or password doesn't match.");
+    setSession(user.id);
+    return sanitizeUser(user);
+  },
+
+  async logout() {
+    await delay(150);
+    clearSession();
+  },
+
+  async currentUser() {
+    await delay(250);
+    const session = getSession();
+    if (!session) return null;
+    const db = readDB();
+    const user = db.users.find((u) => u.id === session.userId);
+    return sanitizeUser(user);
+  },
+
+  async generatePairCode(parentId) {
+    await delay();
+    const db = readDB();
+    const code = genPairCode();
+    db.pairCodes.push({
+      code,
+      parentId,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 1000 * 60 * 30, // 30 minutes
+      used: false,
+    });
+    writeDB(db);
+    return { code, expiresAt: Date.now() + 1000 * 60 * 30 };
+  },
+
+  async registerChild({ name, username, password, pairCode }) {
+    await delay();
+    const db = readDB();
+    const entry = db.pairCodes.find((p) => p.code === pairCode.toUpperCase());
+    if (!entry) throw new Error("That pairing code wasn't recognized.");
+    if (entry.used) throw new Error("That pairing code has already been used.");
+    if (entry.expiresAt < Date.now()) throw new Error("That pairing code has expired.");
+    if (db.users.some((u) => u.username === username)) {
+      throw new Error("That username is already taken.");
+    }
+    const child = {
+      id: uid("child"),
+      role: "child",
+      name,
+      username,
+      password,
+      parentId: entry.parentId,
+      balanceLimit: 200,
+      createdAt: Date.now(),
+    };
+    db.users.push(child);
+    entry.used = true;
+    const parent = db.users.find((u) => u.id === entry.parentId);
+    if (parent) parent.childIds.push(child.id);
+    writeDB(db);
+    setSession(child.id);
+    return sanitizeUser(child);
+  },
+
+  async getFamily(parentId) {
+    await delay(300);
+    const db = readDB();
+    return db.users.filter((u) => u.parentId === parentId).map(sanitizeUser);
+  },
+
+  async getTransactions(user) {
+    await delay(350);
+    const db = readDB();
+    if (user.role === "child") {
+      return db.transactions
+        .filter((t) => t.childId === user.id)
+        .sort((a, b) => b.createdAt - a.createdAt);
+    }
+    const childIds = db.users.filter((u) => u.parentId === user.id).map((u) => u.id);
+    return db.transactions
+      .filter((t) => childIds.includes(t.childId))
+      .sort((a, b) => b.createdAt - a.createdAt);
+  },
+
+  async createTransaction({ childId, amount, merchant, note }) {
+    await delay();
+    const db = readDB();
+    const tx = {
+      id: uid("tx"),
+      childId,
+      amount: Number(amount),
+      merchant,
+      note: note || "",
+      status: "pending",
+      createdAt: Date.now(),
+      decidedAt: null,
+    };
+    db.transactions.push(tx);
+    writeDB(db);
+    return tx;
+  },
+
+  async decideTransaction({ txId, decision }) {
+    await delay(550);
+    const db = readDB();
+    const tx = db.transactions.find((t) => t.id === txId);
+    if (!tx) throw new Error("Transaction not found.");
+    tx.status = decision; // "approved" | "denied"
+    tx.decidedAt = Date.now();
+    writeDB(db);
+    return tx;
+  },
+
+  async getUserById(id) {
+    await delay(150);
+    const db = readDB();
+    return sanitizeUser(db.users.find((u) => u.id === id));
+  },
+};
